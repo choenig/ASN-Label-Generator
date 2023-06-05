@@ -10,6 +10,7 @@ You need to have the DejaVu fonts available.
 
 On MacOS with brew:
 
+    brew tap homebrew/cask-fonts
     brew install font-dejavu
 
 # Usage
