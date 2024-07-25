@@ -19,6 +19,8 @@
 
 import AveryLabels
 
+from urllib.parse import urlparse
+
 from reportlab.lib.units import mm, cm
 from reportlab_qrcode import QRCodeImage
 from reportlab.pdfgen import canvas
@@ -44,32 +46,24 @@ colors = [
 ]
 
 
-# sheet config
-ROWS = 16
-COLS = 5
-CELLS = ROWS*COLS
+def my_url(arg):
+    url = urlparse(arg)
+    if all((url.scheme, url.netloc)):
+        return f"{url.scheme}://{url.netloc}"
+    raise ArgumentTypeError('Invalid URL')
 
 
-def parse_cfg(cfg):
-    # 23:1:16
-    # 23:1:x3
-    parts = cfg.split(":")
-    if len(parts) != 3:
-        print(f"Error: invalid config: {cfg}")
-        return (0, 0, 0)
-
-    year  = int(parts[0]) if parts[0] else 0
-    first = int(parts[1]) if parts[1] else 1
-    if not parts[2]:
+def parse_cfg(args):
+    if not args.last:
         # generate one page full of labels
-        last = first + ROWS * COLS - 1
-    elif parts[2].startswith("x"):
+        last = args.first + args.rows * args.cols - 1
+    elif args.last.startswith("x"):
         # generate n columns of labels
-        last = first + ROWS * int(parts[2][1:]) - 1
+        last = args.first + args.rows * int(args.last[1:]) - 1
     else:
         # generate labels from first-last
-        last = int(parts[2])
-    return (year, first, last)
+        last = int(args.last)
+    return (args.year, args.first, last)
 
 
 def values(year, sn):
@@ -79,34 +73,15 @@ def values(year, sn):
     fg_color = colors[year % len(colors)]
     return (id4, asn, zero4, fg_color)
 
-
-def print_csv(data):
-    def _split(l, chunk_size):
-        chunked = []
-        for i in range(0, len(l), chunk_size):
-            chunked.append(l[i:i + chunk_size])
-        return chunked
-
-    # split data into columns
-    columns = _split(data, ROWS)
-    # split columns into pages
-    pages = _split(columns, COLS)
-
-    print("ID,Year,ID4,CODE,Zero4,fg")
-    for page in pages:
-        for r in range(0, ROWS):
-            for c in range(0, COLS):
-                (year, sn) = page[c][r]
-                (id4, asn, zero4, fg_color) = values(year, sn)
-                print(f"{sn},{year:02d},{id4},{asn},{zero4},{fg_color}")
-
-
-def render(canvas: canvas.Canvas, idx, w, h, data):
+def render(canvas: canvas.Canvas, idx, w, h, data, url):
     (year, sn) = data[idx]
     (id4, asn, zero4, fg_color) = values(year, sn)
 
     # qr code
-    qr = QRCodeImage(asn, size=14.8*mm, border=0)
+    if url is None:
+        qr = QRCodeImage(asn, size=14.8*mm, border=0)
+    else:
+        qr = QRCodeImage(f"{url}/documents?archive_serial_number={year:02d}{id4}", size=14.8*mm, border=0)
     qr.drawOn(canvas, 2*mm, 1*mm)
 
     # bg rect
@@ -137,28 +112,67 @@ def render(canvas: canvas.Canvas, idx, w, h, data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Generate ASN .csv')
+    parser = argparse.ArgumentParser(description='Generate ASN')
 
-    parser.add_argument('cfg', nargs="+", 
-                        help=f"""The configuration in the format <year>:<first>:<last>. 
-                        <year> can be omitted, default year is '0'. <first> is the starting ASN and can be omitted, default start is '1'. 
-                        <last> is the last ASN to generate. It can either be an integer or a value starting with 'x' like 'x3' which means to 
-                        generate 3 blocks of {ROWS} labels. If omitted, a full sheet of labels is generated.""")
+    parser.add_argument(
+        '--rows',
+        '-r',
+        default=16,
+        type=int,
+        help=f"Rows can be omitted, default rows is 16."
+    )
 
-    parser.add_argument('--output', dest='output', metavar='PDF', default='output.pdf',
-                        help="The name of the pdf to generate, default 'output.pdf'")
+    parser.add_argument(
+        '--cols',
+        '-c',
+        default=5,
+        type=int,
+        help=f"Cols can be omitted, default cols is 5."
+    )
+
+    parser.add_argument(
+        '--year',
+        '-y',
+        default=0,
+        type=int,
+        help=f"Year can be omitted, default year is 0."
+    )
+
+    parser.add_argument(
+        '--first',
+        '-f',
+        default=1,
+        type=int,
+        help="First is the starting ASN and can be omitted, default start is 1."
+    )
+
+    parser.add_argument(
+        '--last',
+        '-l', 
+        help=f"""Last is the last ASN to generate. It can either be an integer or a value starting with 'x' like 'x3' which means to 
+        generate 3 blocks of labels. If omitted, a full sheet of labels is generated."""
+    )
+    
+    parser.add_argument(
+        "--url",
+        "-u",
+        type=my_url,
+        help="Paperless-ngx instance url, ex: `http://192.168.10.1:5000`. If set, the generated QR code will point to that specific document. If not set, the default ASN will be used",
+    )
+
+    parser.add_argument(
+        '--output',
+        '-o',
+        dest='output',
+        metavar='PDF',
+        default='output.pdf',
+        help="The name of the pdf to generate, default 'output.pdf'"
+    )
 
     args = parser.parse_args()
 
-    data = []
-    for cfg in args.cfg:
-        (year, first, last) = parse_cfg(cfg)
-        data += [[year, x] for x in range(first, last+1)]
-
-    # fill data to have full pages
-    # if len(data) % CELLS != 0:
-    #     data += [[0, 0] for i in range(0, 80 - len(data) % CELLS)]
-    # print_csv(data)
+    (year, first, last) = parse_cfg(args)
+    data = [[year, x] for x in range(first, last+1)]
 
     # reportlab.rl_config.TTFSearchPath.append(os.path.join(os.path.dirname(__file__), 'fonts'))
     pdfmetrics.registerFont(TTFont('DejaVuSansMono-Bold',        'DejaVuSansMono-Bold.ttf'))
@@ -169,7 +183,7 @@ def main():
     label = AveryLabels.AveryLabel(4732)
     output_pdf = f"{args.output}.pdf" if not args.output.endswith(".pdf") else args.output
     label.open(output_pdf)
-    label.render(render, len(data), data)
+    label.render(render, len(data), data, args.url)
     label.close()
 
 
